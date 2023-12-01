@@ -1,0 +1,107 @@
+pipeline {
+     environment {
+       IMAGE_NAME = "filrougegr3"
+       IMAGE_TAG_LATEST = "latest" /* $toto */
+       IMAGE_TAG_STAGING = "staging"
+       PRODUCTION = "groupe3-production"
+     }
+     agent none
+     stages {
+         stage('Build image and push Image on private docker registry') {
+             agent any
+             steps {
+                script {
+                  sh '''
+                    docker rm -f $IMAGE_NAME
+                    docker build -t $IMAGE_NAME:$IMAGE_TAG_STAGING .
+                    docker tag $IMAGE_NAME:$IMAGE_TAG_STAGING master:5000/$IMAGE_NAME:$IMAGE_TAG_STAGING
+                    docker push master:5000/$IMAGE_NAME:$IMAGE_TAG_STAGING
+                  '''
+                }
+             }
+        }
+        stage('Run container based on builded image') {
+            agent any
+            steps {
+               script {
+                 sh '''
+                    docker run -dit --name $IMAGE_NAME -p 8081:80 master:5000/$IMAGE_NAME:$IMAGE_TAG_STAGING
+                    sleep 5
+                 '''
+               }
+            }
+       }
+      
+       stage('Test image') {
+           agent any
+           steps {
+              script {
+                sh '''
+                    curl http://192.168.99.10:8081 | grep -q "Bootstrap"
+                '''
+              }
+           }
+      }
+      
+      stage('Clean Container') {
+          agent any
+          steps {
+             script {
+               sh '''
+                 docker stop $IMAGE_NAME
+                 docker rm -f $IMAGE_NAME
+               '''
+             }
+          }
+     }
+
+     stage('Prepare ansible environment') {
+            agent any
+            environment {
+                PRIVATE_KEY = credentials('private_keys_jenkins')
+            }
+            steps {
+                sh '''
+                     cp  $PRIVATE_KEY  id_rsa
+                     chmod 600 id_rsa
+                '''
+            }
+     }              
+          
+     stage('Push image in staging and deploy it') { 
+           agent any
+           steps {
+               script {
+                 sh '''
+                     cd $WORKSPACE/ressourcesansible && ansible-playbook playbooks/deploy_app.yml  --private-key ../id_rsa -e env=staging -e image=$IMAGE_NAME:$IMAGE_TAG_STAGING -e REGISTRY_HOST=master             
+                 '''
+               }
+           }
+     }
+     
+    
+     stage ('Push Image on private docker registry_latest') {
+          agent any
+          steps {
+             script {
+               sh '''
+                    docker tag $IMAGE_NAME:$IMAGE_TAG_STAGING master:5000/$IMAGE_NAME:$IMAGE_TAG_LATEST
+                    docker push master:5000/$IMAGE_NAME:$IMAGE_TAG_LATEST
+               '''
+             }
+          }
+    } 
+    
+    
+    
+    
+     stage('Push image in production and deploy it') {
+      agent any
+      steps {
+          sh'''
+               cd $WORKSPACE/ressourcesansible && ansible-playbook playbooks/deploy_app.yml  --private-key ../id_rsa -e env=prod -e image=$IMAGE_NAME:$IMAGE_TAG_LATEST -e REGISTRY_HOST=master  
+          '''
+      }
+     }
+    }
+}
